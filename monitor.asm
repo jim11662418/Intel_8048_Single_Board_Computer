@@ -1,20 +1,48 @@
             PAGE 0              ; suppress page headings in ASW listing file
+            cpu 8048
+;---------------------------------------------------------------------------------------------------------------------------------
+; Copyright 2023 Jim Loos
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files
+; (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge,
+; publish, distribute, sub-license, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do
+; so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+; OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+; LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+; IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+;---------------------------------------------------------------------------------------------------------------------------------
+
+;------------------------------------------------------------------------
+; monitor commands:
+;   D - dump internal memory in hex and ASCII
+;   M - modify internal memory
+;   T - display state of T0 and T1 inputs
+;   I - input from port
+;   O - output to port
+;------------------------------------------------------------------------
+
             include "bitfuncs.inc"
             
 ; serial I/O at 9600 bps N-8-1
 
-; RAM:  00-07   register bank 0
-;       08-17   stack
-;       18-1F   register bank 1
-;       20-7F   data RAM
+; RAM:  00-07     register bank 0
+;       08-17     stack
+;       18-1F     register bank 1
+;       20-7F     data RAM
+;
+; ROM:  0000-07FF memory bank 0
+;       0800-0FFF memory bank 1  
 
-            cpu 8048
-            
 ;------------------------------------------------------------------------            
 ; compare the value in REGISTER to the value in the Accumulator.
-; zero flag is set if the values are equal.
-; carry flag is set if the value in REGISTER is equal to or greater than the value in the Accumulator.
-; carry flag is cleared if the value in REGISTER is less than the value in the Accumulator.
+; zero flag is set if the value in REGISTER is equal to the value 
+; in the Accumulator. carry flag is set if the value in REGISTER is 
+; equal to or greater than the value in the Accumulator. carry flag is
+; cleared if the value in REGISTER is less than the value in the Accumulator.
 ; modifies the Accumulator.
 ;------------------------------------------------------------------------
 compare     MACRO REGISTER
@@ -48,10 +76,12 @@ start:      mov R0,#lo(titletxt)
             mov R0,#state
             mov @R0,A           ; reset 'state'
             
+menu:       call menuout 
+            
 prompt:     call newline
             mov A,#'>'
             call putch
-            call getche
+            call getch
             call toupper
             mov R3,A            ; character in R3 for compare
             mov A,#ESC
@@ -76,6 +106,7 @@ prompt1:    mov A,#'?'
 prompt2:    mov R1,#state
             mov A,#0
             mov @R1,A           ; reset key 'state' back to zero
+            
             mov A,#'D'
             compare R3          ; is it 'D'?
             jnz prompt3         ; jump if not 'D'
@@ -84,11 +115,31 @@ prompt2:    mov R1,#state
             
 prompt3:    mov A,#'M'
             compare R3
-            jnz prompt
+            jnz prompt4
             call modify
             jmp prompt
-       
+            
+prompt4:    mov A,#'T'
+            compare R3
+            jnz prompt5
+            call testInput
+            jmp prompt     
+
+prompt5:    mov A,#'I'
+            compare R3
+            jnz prompt6
+            call portInp
+            jmp prompt 
+
+prompt6:    mov A,#'O'
+            compare R3
+            jnz menu
+            call portOut
+            jmp prompt
+
+;------------------------------------------------------------------------            
 ; display and modify internal memory       
+;------------------------------------------------------------------------
 modify:     mov R0,#lo(addrtxt)
             call txtout         ; prompt for memory address
             call get2hex        ; get the internal memory address
@@ -117,12 +168,14 @@ modify3:    inc R1              ; increment the memory pointer to the next memor
             jmp modify1         ; go back for the next memory location
 
 modify4:    ret
-            
-; dump internal memory 00-FF in hex and ASCII
+       
+;------------------------------------------------------------------------       
+; dump internal memory 00-7F in hex and ASCII
+;------------------------------------------------------------------------
 dump:       mov R0,#lo(headingtxt)
             call txtout
             mov R1,#0           ; start at the begining of RAM
-            mov R5,#16          ; 16 lines
+            mov R5,#8           ; 8 lines of 16 bytes = 128 bytes
 
 nextline:   mov A,R1
             mov R2,A            ; save the starting address in R2 for the ASCII print later
@@ -153,7 +206,7 @@ nextline2:  mov A,@R1           ; retrieve the byte from memory
             compare R3
             mov A,#'.'          ; '.' for unprintable characters
             jc nextline3        ; jump if the byte is greater than or equal to 7FH
-            mov A,R3            ; else, restore the original byte from R0
+            mov A,R3            ; else, restore the original byte from R3
 nextline3:  call putch          ; print the character
             inc R1              ; next memory location
             djnz R4,nextline2   ; do all 16 bytes on this line
@@ -161,7 +214,109 @@ nextline3:  call putch          ; print the character
             call newline        
             djnz R5,nextline    ; loop for 16 lines (256 bytes)
             ret
-       
+            
+;------------------------------------------------------------------------
+; display the values of the T0 and T1 inputs
+;------------------------------------------------------------------------              
+testInput:  mov R0,#lo(t0txt)
+            call txtout
+            mov A,#30H
+            jnt0 testInput1
+            inc A
+testInput1: call putch            
+            mov R0,#lo(t1txt)
+            call txtout
+            mov A,#30H
+            jnt1 testInput2
+            inc A
+testInput2: call putch            
+            call newline            
+            ret
+
+;------------------------------------------------------------------------
+; input a value from P1 or P2
+;------------------------------------------------------------------------              
+portInp:    mov R0,#lo(porttxt)
+            call txtout         ; prompt for port address
+            call getch          ; get the port address
+            mov R5,A            ; save the port address in R5
+            call newline
+            mov A,R5            ; restore the port address from R5
+            mov R3,#'1'
+            compare R3          ; is it port1?
+            jz  portInp1        ; jump if port1
+            in  A,P2            ; else, input from port2
+            jmp portInp2
+            
+portInp1:   in A,P1             ; input from port1
+portInp2:   call printhex       ; print the input 
+            jmp newline         
+
+;------------------------------------------------------------------------
+; output a value to P1 or P2
+;------------------------------------------------------------------------              
+portOut:    mov R0,#lo(porttxt)
+            call txtout         ; prompt for port address
+            call getch
+            mov R3,#'1'
+            compare R3          ; port1?
+            mov R1,#01H         ; store '1' for port1
+            jz  portOut2
+            mov R1,#00H         ; else store '0'
+portOut2:   mov R0,#lo(valuetxt)
+            call txtout         ; prompt for output value
+            call get2hex        ; get value to output as two hex digits
+            mov R4,A            ; save the value to output in R4
+            call newline
+            mov A,R4            ; restore the value to output
+            djnz R1,portOut3    ; jump if not port1
+            outl P1,A           ; output value to port1
+            ret
+portOut3:   outl P2,A           ; output value to port2 
+            ret
+            
+            org 0200H           ; page 2 of program memory bank 0
+;------------------------------------------------------------------------
+; print the string in this page of program memory pointed to by R0.
+; the string must be terminated by zero.
+; in addition to A, uses R0, R6 and R7.
+;------------------------------------------------------------------------            
+menuout:    mov R0,#lo(menutxt)
+menuloop:   mov A,R0
+            movp A,@A          ; move to A from this page of program memory
+            anl A,#07FH
+            jz menudone
+            call putch
+            inc R0
+            jmp menuloop
+menudone:   ret                  
+            
+menutxt:    db  CR,LF
+            db  "D - Dump memory",CR,LF
+            db  "I - Input from port",CR,LF
+            db  "M - Modify memory",CR,LF
+            db  "O - Output to port",CR,LF
+            db  "T - display Test inputs",CR,LF,0            
+
+            org 0300H         ; page 3 of program memory bank 0
+            
+            db  '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'  ; hex digits 0-F in ASCII
+            
+titletxt:   db  CR,LF,LF,LF
+            db  "8048 Serial Monitor",CR,LF
+            db  "Assembled on ",DATE," at ",TIME,CR,LF,LF,0
+            
+addrtxt:    db  CR,LF,"Address: ",0            
+            
+headingtxt: db  CR,LF,"   00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F",CR,LF,0            
+
+t0txt:      db  CR,LF,"T0 input: ",0
+t1txt:      db  CR,LF,"T1 input: ",0
+
+porttxt     db  CR,LF,"Port number? (1-2) ",0
+valuetxt:   db  CR,LF,"Output byte? (in hex) ",0
+            
+            org 0400H            
 ;------------------------------------------------------------------------            
 ; convert the lower case character in A to upper case 
 ; uses R3           
@@ -182,47 +337,21 @@ toupper:    mov R3,A            ; save character in R3
 toupper1:   mov A,R3
             ret            
         
-;------------------------------------------------------------------------
-; print the string in page 3 of program memory pointed to by R0.
-; the string must be terminated by zero.
-; uses R0 in addition to A.
-;------------------------------------------------------------------------            
-txtout:     mov A,R0
-            movp3 A,@A          ; move to A from page 3 of program memory
-            anl A,#07FH
-            jz txtdone
-            call putch
-            inc R0
-            jmp txtout
-txtdone:    ret       
-
-;------------------------------------------------------------------------
-; print carriage return and line feed
-;------------------------------------------------------------------------            
-newline:    mov A,#CR
-            call putch
-            mov A,#LF
-            jmp putch
-            
-;------------------------------------------------------------------------
-; print a space
-;------------------------------------------------------------------------            
-space:      mov A,#' '
-            jmp putch
-            
 ;------------------------------------------------------------------------            
 ; prints the contents of the accumulator as two hex digits
+; uses R0, R6 and R7
 ;------------------------------------------------------------------------
-printhex:   mov R0,A            ; save the value on A in R0
+printhex:   mov R0,A            ; save the value of A in R0
             rr A
             rr A
             rr A
             rr A
             call hex2ascii
             call putch          ; print the most significant digit
-            mov A,R0            ; recall the value from R0
+            mov A,R0            ; restore the value from R0
             call hex2ascii
             call putch          ; print the least significant digit
+            mov A,R0            ; restore the value from R0 to A
             ret
 
 ; returns the ASCII value for the hex nibble in A
@@ -231,7 +360,6 @@ hex2ascii:  anl A,#0FH
             movp3 A,@A
             ret
 
-            org 0200H
 ;------------------------------------------------------------------------
 ; sends the character in A out from the serial output (P2.7)
 ; uses A, R6 and R7.
@@ -264,7 +392,7 @@ putch3:     rr A                    ; rotate the next bit into position
 ;------------------------------------------------------------------------
 ; waits for a character from the serial input (T0).
 ; returns the character in A.
-; uses A, R6 and R7.
+; in addition to A, uses R6 and R7.
 ;------------------------------------------------------------------------
 getch:      jt0 getch               ; wait here for the start bit
             clr A                   ; start with A cleared
@@ -292,7 +420,7 @@ getch3:     rr A                    ; rotate the bits in the received character 
 ; waits for a character from the serial input (T0).
 ; echos the character bit by bit (output on P2.7).
 ; returns the character in A.
-; uses A, R6 and R7.
+; in addition to A, uses R6 and R7.
 ;------------------------------------------------------------------------
 getche:     jt0 getche              ; wait here for the start bit
             clr A                   ; start with A cleared
@@ -329,7 +457,7 @@ getche3:    rr A                    ; rotate the bits in the received character 
 ; get two hex digits from the serial port. echo the digits. 
 ; return with carry set if ESCAPE, RETURN or SPACE 
 ; else, return the two hex digits as the corresponding byte in the accumulator.
-; uses R3 and R7
+; in addition to A, uses R3, R4, R6 and R7
 ;------------------------------------------------------------------------            
 get2hex:    call get1hex        ; get the most significant hex digit
             jc get2hex1         
@@ -337,10 +465,10 @@ get2hex:    call get1hex        ; get the most significant hex digit
             rl A
             rl A
             rl A
-            mov R7,A            ; save it in R1
+            mov R4,A            ; save it in R1
             call get1hex        ; get the least signficant digit
             jc get2hex1
-            orl A,R7            ; combine the two digits into A
+            orl A,R4            ; combine the two digits into A
 get2hex1:   ret
             
 ; get a hex digit from serial port. echo the digit.       
@@ -372,10 +500,10 @@ get1hex:    call getch
             
 get1hex1:   mov A,#'A'
             compare R3
-            jnc get1hex         ; jump if the character in R0 is less than 'A'
+            jnc get1hex         ; jump if the character in R3 is less than 'A'
             mov A,#'F'+1
             compare R3
-            jc get1hex          ; jump if the character in R0 is equal to or greater than 'G'
+            jc get1hex          ; jump if the character in R3 is equal to or greater than 'G'
             mov A,R3            ; else, recall the character from R3
             call putch          ; echo the character
             anl A,#0FH
@@ -386,16 +514,36 @@ gethex2:    mov A,R3            ; retrieve the character from R3
             clr c
             cpl c               ; return with carry set
             ret
+            
+            org 0500H
+;------------------------------------------------------------------------
+; print the string in page 3 of program memory pointed to by R0.
+; the string must be terminated by zero.
+; in addition to A, uses R0, R6 and R7.
+;------------------------------------------------------------------------            
+txtout:     mov A,R0
+            movp3 A,@A          ; move to A from page 3 of program memory
+            anl A,#07FH
+            jz txtdone
+            call putch
+            inc R0
+            jmp txtout
+txtdone:    ret       
 
-            org 0300H       ; page 3 of program memory bank 0
-            db  30H,31H,32H,33H,34H,35H,36H,37H,38H,39H,41H,42H,43H,44H,45H,46H  ; hex digits 0-F in ASCII
+;------------------------------------------------------------------------
+; print carriage return and line feed
+; uses A, R6 and R7.
+;------------------------------------------------------------------------            
+newline:    mov A,#CR
+            call putch
+            mov A,#LF
+            jmp putch
             
-titletxt:   db  CR,LF,LF,LF
-            db  "8048 Serial Monitor",CR,LF
-            db  "Assembled on ",DATE," at ",TIME,CR,LF,LF,0
-            
-addrtxt:    db  CR,LF,"Address: ",0            
-            
-headingtxt: db  CR,LF,"   00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F",CR,LF,0            
-            
+;------------------------------------------------------------------------
+; print a space
+; uses A, R6 and R7.
+;------------------------------------------------------------------------            
+space:      mov A,#' '
+            jmp putch            
+
             end
